@@ -32,6 +32,7 @@ import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.text.StringSubstitutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -48,10 +49,12 @@ public class KeycloakImportProvider {
     private StringSubstitutor interpolator = null;
 
     private final ImportConfigProperties importConfigProperties;
+    private final ResourceLoader resourceLoader;
 
     public KeycloakImportProvider(
-            ImportConfigProperties importConfigProperties) {
+            ImportConfigProperties importConfigProperties, ResourceLoader resourceLoader) {
         this.importConfigProperties = importConfigProperties;
+        this.resourceLoader = resourceLoader;
 
         if (importConfigProperties.isVarSubstitution()) {
             this.interpolator = StringSubstitutor.createInterpolator()
@@ -70,7 +73,14 @@ public class KeycloakImportProvider {
     }
 
     private KeycloakImport readFromPath(String path) {
-        File configPath = new File(path);
+        String resourcePrefix = path.startsWith("http") ? "url:" : "file:";
+        File configPath;
+
+        try {
+            configPath = resourceLoader.getResource(resourcePrefix + path).getFile();
+        } catch (IOException e) {
+            throw new InvalidImportException(e);
+        }
 
         if (!configPath.exists() || !configPath.canRead()) {
             throw new InvalidImportException("import.path does not exists: " + configPath.getAbsolutePath());
