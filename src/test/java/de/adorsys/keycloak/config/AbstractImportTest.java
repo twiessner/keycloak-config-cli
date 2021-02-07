@@ -38,7 +38,6 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
-import org.springframework.util.ResourceUtils;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.output.ToStringConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -46,7 +45,6 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.time.Duration;
 
@@ -121,7 +119,7 @@ abstract public class AbstractImportTest {
         }
 
         return keycloakImportProvider
-                .readRealmImportFromFile(realmImportFile)
+                .getFromLocalFile(realmImportFile)
                 .getRealmImports()
                 .get(fileName);
     }

@@ -30,12 +30,12 @@ import de.adorsys.keycloak.config.properties.ImportConfigProperties;
 import de.adorsys.keycloak.config.util.ChecksumUtil;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.text.StringSubstitutor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Component;
+import org.springframework.util.ResourceUtils;
 
-import java.io.File;
-import java.io.IOException;
+import java.io.*;
+import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.*;
@@ -43,8 +43,6 @@ import java.util.stream.Collectors;
 
 @Component
 public class KeycloakImportProvider {
-    private static final Logger logger = LoggerFactory.getLogger(KeycloakImportProvider.class);
-
     private StringSubstitutor interpolator = null;
 
     private final ImportConfigProperties importConfigProperties;
@@ -62,29 +60,24 @@ public class KeycloakImportProvider {
 
     public KeycloakImport get() {
         KeycloakImport keycloakImport;
-
         String importFilePath = importConfigProperties.getPath();
-        keycloakImport = readFromPath(importFilePath);
 
-        return keycloakImport;
+        try {
+            UrlResource importFilePathUrl = new UrlResource(importFilePath);
+            if (ResourceUtils.URL_PROTOCOL_FILE.equals(importFilePathUrl.getURL().getProtocol())) {
+                keycloakImport = getFromLocal(importFilePathUrl);
+            } else {
+                keycloakImport = getFromRemote(importFilePathUrl);
+            }
+
+            return keycloakImport;
+        } catch (IOException e) {
+            throw new InvalidImportException(e);
+        }
     }
 
-    private KeycloakImport readFromPath(String path) {
-        File configPath = new File(path);
-
-        if (!configPath.exists() || !configPath.canRead()) {
-            throw new InvalidImportException("import.path does not exists: " + configPath.getAbsolutePath());
-        }
-
-        if (configPath.isDirectory()) {
-            return readRealmImportsFromDirectory(configPath);
-        }
-
-        return readRealmImportFromFile(configPath);
-    }
-
-    public KeycloakImport readRealmImportsFromDirectory(File importFilesDirectory) {
-        Map<String, RealmImport> realmImports = Optional.ofNullable(importFilesDirectory.listFiles())
+    public KeycloakImport getFromLocalDirectory(File locationFile) {
+        Map<String, RealmImport> realmImports = Optional.ofNullable(locationFile.listFiles())
                 .map(Arrays::asList)
                 .orElse(Collections.emptyList())
                 .stream()
@@ -102,22 +95,84 @@ public class KeycloakImportProvider {
         return new KeycloakImport(realmImports);
     }
 
-    public KeycloakImport readRealmImportFromFile(File importFile) {
+    public KeycloakImport getFromLocalFile(File importFile) {
         Map<String, RealmImport> realmImports = new HashMap<>();
-
         RealmImport realmImport = readRealmImport(importFile);
         realmImports.put(importFile.getName(), realmImport);
 
         return new KeycloakImport(realmImports);
     }
 
-    private RealmImport readRealmImport(File importFile) {
-        logger.info("Importing file '{}'", importFile.getAbsoluteFile());
+    private KeycloakImport getFromRemote(UrlResource location) throws IOException {
+        String content = readURL(location.getURL());
+        String fileName = location.getFilename();
 
-        return readToRealmImport(importFile);
+        Map<String, RealmImport> realmImports = new HashMap<>();
+        RealmImport realmImport = readRealmImportFromString(fileName, content);
+        realmImports.put(fileName, realmImport);
+
+        return new KeycloakImport(realmImports);
     }
 
-    private RealmImport readToRealmImport(File importFile) {
+    private KeycloakImport getFromLocal(UrlResource location) throws IOException {
+        File locationFile = location.getFile();
+
+        if (!locationFile.exists() || !locationFile.canRead()) {
+            throw new InvalidImportException("import.path does not exists: " + locationFile.getAbsolutePath());
+        }
+
+        if (locationFile.isDirectory()) {
+            return getFromLocalDirectory(locationFile);
+        }
+
+        return getFromLocalFile(locationFile);
+    }
+
+    private RealmImport readRealmImport(File importFile) {
+        try {
+            String importConfig = readFile(importFile);
+
+            return readRealmImportFromString(importFile.getName(), importConfig);
+        } catch (IOException e) {
+            throw new InvalidImportException(e);
+        }
+    }
+
+    private RealmImport readRealmImportFromString(String fileName, String importConfig) throws IOException {
+        ObjectMapper objectMapper = getObjectMapper(fileName);
+
+        if (importConfigProperties.isVarSubstitution()) {
+            importConfig = interpolator.replace(importConfig);
+        }
+
+        String checksum = ChecksumUtil.checksum(importConfig.getBytes(StandardCharsets.UTF_8));
+
+        RealmImport realmImport = objectMapper.readValue(importConfig, RealmImport.class);
+        realmImport.setChecksum(checksum);
+
+        return realmImport;
+    }
+
+    private String readFile(File importFile) throws IOException {
+        byte[] importFileInBytes = Files.readAllBytes(importFile.toPath());
+        return new String(importFileInBytes, StandardCharsets.UTF_8);
+    }
+
+    private String readURL(URL importUrl) throws IOException {
+        URLConnection urlConnection = importUrl.openConnection();
+        urlConnection.setDoOutput(true);
+
+        // https://stackoverflow.com/a/5137446
+        if (importUrl.getUserInfo() != null) {
+            String basicAuth = "Basic " + new String(Base64.getEncoder().encode(importUrl.getUserInfo().getBytes()));
+            urlConnection.setRequestProperty("Authorization", basicAuth);
+        }
+
+        BufferedReader reader = new BufferedReader(new InputStreamReader(urlConnection.getInputStream()));
+        return reader.lines().collect(Collectors.joining(System.lineSeparator()));
+    }
+
+    private ObjectMapper getObjectMapper(String filename) {
         ImportConfigProperties.ImportFileType fileType = importConfigProperties.getFileType();
 
         ObjectMapper objectMapper;
@@ -130,7 +185,7 @@ public class KeycloakImportProvider {
                 objectMapper = new ObjectMapper();
                 break;
             case AUTO:
-                String fileExt = FilenameUtils.getExtension(importFile.getName());
+                String fileExt = FilenameUtils.getExtension(filename);
                 switch (fileExt) {
                     case "yaml":
                     case "yml":
@@ -148,35 +203,6 @@ public class KeycloakImportProvider {
         }
 
         objectMapper.enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-
-        byte[] importFileInBytes = readRealmImportToBytes(importFile);
-        String importConfig = new String(importFileInBytes, StandardCharsets.UTF_8);
-
-        if (importConfigProperties.isVarSubstitution()) {
-            importConfig = interpolator.replace(importConfig);
-        }
-
-        String checksum = ChecksumUtil.checksum(importConfig.getBytes(StandardCharsets.UTF_8));
-
-        try {
-            RealmImport realmImport = objectMapper.readValue(importConfig, RealmImport.class);
-            realmImport.setChecksum(checksum);
-
-            return realmImport;
-        } catch (IOException e) {
-            throw new InvalidImportException(e);
-        }
-    }
-
-    private byte[] readRealmImportToBytes(File importFile) {
-        byte[] importFileInBytes;
-
-        try {
-            importFileInBytes = Files.readAllBytes(importFile.toPath());
-        } catch (IOException e) {
-            throw new InvalidImportException(e);
-        }
-
-        return importFileInBytes;
+        return objectMapper;
     }
 }
