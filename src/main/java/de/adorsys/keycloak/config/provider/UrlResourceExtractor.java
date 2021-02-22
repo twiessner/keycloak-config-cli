@@ -57,7 +57,7 @@ class UrlResourceExtractor implements ResourceExtractor {
         URLConnection connection = connectionMaybeSetupBasicAuth(resource);
         try (InputStream inputStream = connection.getInputStream()) {
             File tempFile = FileUtils.createTempFile(resource.getFilename(), inputStream);
-            Assert.notNull(tempFile, "The temp file to extract resource must be not null!");
+            Assert.notNull(tempFile, "The temp file to extract the resource must be not null!");
             return FileUtils.extractFile(tempFile);
         } catch (IOException ioex) {
             // Close the HTTP connection (if applicable).
